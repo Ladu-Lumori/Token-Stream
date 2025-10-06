@@ -96,6 +96,60 @@
     )
 )
 
+;; Withdraw extra tokens from the stream
+(define-public (refund (stream-id uint))
+    (let (
+            (stream (unwrap! (map-get? streams stream-id) ERR_INVALID_STREAM_ID))
+            (balance (balance-of stream-id (get sender stream)))
+        )
+        (asserts! (is-eq contract-caller (get sender stream)) ERR_UNAUTHORIZED)
+        (asserts! (< (get end-block (get timeframe stream)) stacks-block-height)
+            ERR_STREAM_STILL_ACTIVE
+        )
+        (map-set streams stream-id
+            (merge stream { balance: (- (get balance stream) balance) })
+        )
+        (try! (as-contract (stx-transfer? balance tx-sender (get sender stream))))
+        (ok balance)
+    )
+)
+
+;; Update stream configuration
+(define-public (update-details
+        (stream-id uint)
+        (payment-per-block uint)
+        (timeframe {
+            start-block: uint,
+            end-block: uint,
+        })
+        (signature (buff 65))
+        (signer principal)
+    )
+    (let ((stream (unwrap! (map-get? streams stream-id) ERR_INVALID_SIGNATURE)))
+        (asserts!
+            (validate-signature
+                (hash-stream stream-id payment-per-block timeframe)
+                signature signer
+            )
+            ERR_INVALID_SIGNATURE
+        )
+        (asserts!
+            (or
+                (and (is-eq (get sender stream) contract-caller) (is-eq (get recepient stream) signer))
+                (and (is-eq (get sender stream) signer) (is-eq (get recepient stream) contract-caller))
+            )
+            ERR_UNAUTHORIZED
+        )
+        (map-set streams stream-id
+            (merge stream {
+                payment-per-block: payment-per-block,
+                timeframe: timeframe,
+            })
+        )
+        (ok true)
+    )
+)
+
 ;; read only functions
 ;; Calculate the number of blocks elapsed since the stream started
 (define-read-only (calculate-block-delta (timeframe {
@@ -138,6 +192,39 @@
                 u0
             )
         )
+    )
+)
+
+;; Get hash of the stream
+(define-read-only (hash-stream
+        (stream-id uint)
+        (new-payment-per-block uint)
+        (new-timeframe {
+            start-block: uint,
+            end-block: uint,
+        })
+    )
+    (let (
+            (stream (unwrap! (map-get? streams stream-id) (sha256 0)))
+            (msg (concat
+                (concat (unwrap-panic (to-consensus-buff? stream))
+                    (unwrap-panic (to-consensus-buff? new-payment-per-block))
+                )
+                (unwrap-panic (to-consensus-buff? new-timeframe))
+            ))
+        )
+        (sha256 msg)
+    )
+)
+
+;; Signature verification
+(define-read-only (validate-signature
+        (hash (buff 32))
+        (signature (buff 65))
+        (signer principal)
+    )
+    (is-eq (principal-of? (unwrap! (secp256k1-recover? hash signature) false))
+        (ok signer)
     )
 )
 
